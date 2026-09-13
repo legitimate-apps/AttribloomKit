@@ -10,7 +10,7 @@ import Security
 #endif
 
 /// The result of binding a referral to an App Store account token.
-public struct BindResult: Sendable, Equatable {
+public struct BindResult: Sendable, Equatable, Codable {
     /// The StoreKit 2 account token issued by Attribloom.
     public let appAccountToken: UUID
     /// An optional offer code returned with the binding.
@@ -78,7 +78,8 @@ public actor AttribloomClient {
         return try await request(path: "/v1/app-store/bind", body: body, isDeferred: false)
     }
 
-    /// Resolves a deferred referral for a surface ID.
+    /// Legacy endpoint always returns no match. Use a link or user-entered code.
+    @available(*, deprecated, message: "IP attribution is retired; use bind(signedClickId:refCode:)")
     public func deferredBind(surfaceId: String) async throws -> BindResult {
         try await request(path: "/v1/app-store/bind/deferred", body: ["surfaceId": surfaceId], isDeferred: true)
     }
@@ -152,18 +153,31 @@ public protocol AppAccountTokenStore: Sendable {
     func save(_ token: UUID) throws
     /// Clears any persisted account token.
     func clear() throws
+    func loadBinding() throws -> BindResult?
+    func saveBinding(_ result: BindResult) throws
+}
+
+public extension AppAccountTokenStore {
+    func loadBinding() throws -> BindResult? {
+        try load().map { BindResult(appAccountToken: $0, offerCode: nil) }
+    }
+    func saveBinding(_ result: BindResult) throws { try save(result.appAccountToken) }
 }
 
 /// A Keychain-backed account token store.
 public struct KeychainTokenStore: AppAccountTokenStore {
     private static let service = "com.attribloom.AttribloomKit"
-    private static let account = "appAccountToken"
+    private let account: String
 
     /// Creates a Keychain token store.
-    public init() {}
+    public init(accountID: String? = nil) {
+        self.account = accountID.map { "account:\($0)" } ?? "appAccountToken"
+    }
 
     /// Loads the token from the Keychain.
-    public func load() throws -> UUID? {
+    public func load() throws -> UUID? { try loadBinding()?.appAccountToken }
+
+    public func loadBinding() throws -> BindResult? {
         #if canImport(Security)
         var query = attributes
         query[kSecReturnData as String] = true
@@ -171,20 +185,27 @@ public struct KeychainTokenStore: AppAccountTokenStore {
         var result: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
         if status == errSecItemNotFound { return nil }
-        guard status == errSecSuccess, let data = result as? Data,
-              let string = String(data: data, encoding: .utf8), let token = UUID(uuidString: string) else {
+        guard status == errSecSuccess, let data = result as? Data else {
             throw KeychainError.status(status)
         }
-        return token
+        if let binding = try? JSONDecoder().decode(BindResult.self, from: data) { return binding }
+        guard let string = String(data: data, encoding: .utf8), let token = UUID(uuidString: string) else {
+            throw AttribloomError.decodingFailed
+        }
+        return BindResult(appAccountToken: token, offerCode: nil)
         #else
-        return KeychainFallback.load()
+        return KeychainFallback.load(account)
         #endif
     }
 
     /// Saves the token in the Keychain.
     public func save(_ token: UUID) throws {
+        try saveBinding(BindResult(appAccountToken: token, offerCode: nil))
+    }
+
+    public func saveBinding(_ result: BindResult) throws {
         #if canImport(Security)
-        let data = Data(token.uuidString.utf8)
+        let data = try JSONEncoder().encode(result)
         let status = SecItemUpdate(attributes as CFDictionary, [kSecValueData as String: data] as CFDictionary)
         if status == errSecItemNotFound {
             var item = attributes
@@ -196,7 +217,7 @@ public struct KeychainTokenStore: AppAccountTokenStore {
             throw KeychainError.status(status)
         }
         #else
-        KeychainFallback.save(token)
+        KeychainFallback.save(result, account: account)
         #endif
     }
 
@@ -206,13 +227,13 @@ public struct KeychainTokenStore: AppAccountTokenStore {
         let status = SecItemDelete(attributes as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else { throw KeychainError.status(status) }
         #else
-        KeychainFallback.clear()
+        KeychainFallback.clear(account)
         #endif
     }
 
     #if canImport(Security)
     private var attributes: [String: Any] {
-        [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: Self.service, kSecAttrAccount as String: Self.account]
+        [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: Self.service, kSecAttrAccount as String: account]
     }
 
     private enum KeychainError: Error { case status(OSStatus) }
@@ -222,29 +243,32 @@ public struct KeychainTokenStore: AppAccountTokenStore {
 #if !canImport(Security)
 private enum KeychainFallback {
     private static let lock = NSLock()
-    private static var token: UUID?
-    static func load() -> UUID? { lock.withLock { token } }
-    static func save(_ value: UUID) { lock.withLock { token = value } }
-    static func clear() { lock.withLock { token = nil } }
+    nonisolated(unsafe) private static var tokens: [String: BindResult] = [:]
+    static func load(_ account: String) -> BindResult? { lock.withLock { tokens[account] } }
+    static func save(_ value: BindResult, account: String) { lock.withLock { tokens[account] = value } }
+    static func clear(_ account: String) { _ = lock.withLock { tokens.removeValue(forKey: account) } }
 }
 #endif
 
 /// A thread-safe in-memory token store for tests and previews.
 public final class InMemoryTokenStore: AppAccountTokenStore, @unchecked Sendable {
     private let lock = NSLock()
-    private var token: UUID?
+    private var binding: BindResult?
 
     /// Creates an empty in-memory store.
     public init() {}
 
     /// Loads the current in-memory token.
-    public func load() throws -> UUID? { lock.withLock { token } }
+    public func load() throws -> UUID? { lock.withLock { binding?.appAccountToken } }
 
     /// Saves an in-memory token.
-    public func save(_ token: UUID) throws { lock.withLock { self.token = token } }
+    public func save(_ token: UUID) throws { lock.withLock { self.binding = BindResult(appAccountToken: token, offerCode: nil) } }
+
+    public func loadBinding() throws -> BindResult? { lock.withLock { binding } }
+    public func saveBinding(_ result: BindResult) throws { lock.withLock { binding = result } }
 
     /// Clears the current in-memory token.
-    public func clear() throws { lock.withLock { token = nil } }
+    public func clear() throws { lock.withLock { binding = nil } }
 }
 
 /// High-level facade that resolves and persists an App Store account token.
@@ -261,20 +285,21 @@ public actor Attribloom {
     /// Returns the persisted account token, if present.
     public func appAccountToken() throws -> UUID? { try store.load() }
 
+    public func binding() throws -> BindResult? { try store.loadBinding() }
+
     /// Resolves and persists a token from an explicit referral.
     public func resolveToken(signedClickId: String? = nil, refCode: String? = nil) async throws -> UUID {
         if let token = try store.load() { return token }
         let result = try await client.bind(signedClickId: signedClickId, refCode: refCode)
-        try store.save(result.appAccountToken)
+        try store.saveBinding(result)
         return result.appAccountToken
     }
 
-    /// Resolves and persists a token from deferred attribution.
+    /// Legacy cached-token lookup; no network-derived referral may be created.
+    @available(*, deprecated, message: "Use explicit referral recovery instead")
     public func resolveTokenDeferred(surfaceId: String) async throws -> UUID {
         if let token = try store.load() { return token }
-        let result = try await client.deferredBind(surfaceId: surfaceId)
-        try store.save(result.appAccountToken)
-        return result.appAccountToken
+        throw AttribloomError.notFound
     }
 
     /// Clears the persisted account token.

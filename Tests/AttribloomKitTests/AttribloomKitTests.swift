@@ -131,6 +131,29 @@ final class AttribloomKitTests: XCTestCase {
         XCTAssertEqual(StubURLProtocol.requests.count, 1)
     }
 
+    func testOffersPersistWithReferralContext() async throws {
+        stub(status: 200, json: "{\"appAccountToken\":\"\(token.uuidString)\",\"offerCode\":\"WELCOME\"}")
+        let store = InMemoryTokenStore()
+        let facade = Attribloom(client: client(), store: store)
+        _ = try await facade.resolveToken(refCode: "creator")
+        XCTAssertEqual(try store.loadBinding()?.offerCode, "WELCOME")
+        try await facade.reset()
+        XCTAssertNil(try store.loadBinding())
+    }
+
+    func testKeychainAccountIsolationAndOffers() throws {
+        let a = KeychainTokenStore(accountID: "test-a-\(UUID())")
+        let b = KeychainTokenStore(accountID: "test-b-\(UUID())")
+        defer { try? a.clear(); try? b.clear() }
+        let result = BindResult(appAccountToken: token, offerCode: "OFFER")
+        try a.saveBinding(result)
+        XCTAssertEqual(try a.loadBinding(), result)
+        XCTAssertNil(try b.load())
+        try b.save(UUID())
+        try b.clear()
+        XCTAssertEqual(try a.loadBinding(), result)
+    }
+
     private func client() -> AttribloomClient {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [StubURLProtocol.self]
