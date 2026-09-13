@@ -25,7 +25,7 @@ func acceptReferral(_ code: String) async {
 
 // Purchase does not make or wait for an attribution network request.
 func purchase(_ product: Product, attributionPermitted: Bool) async throws -> Product.PurchaseResult {
-    let token = attributionPermitted ? try? await attribution.appAccountToken() : nil
+    let token = attributionPermitted ? (try? await attribution.appAccountToken()) : nil
     let options: Set<Product.PurchaseOption> = token.map { [.attribloom($0)] } ?? []
     return try await product.purchase(options: options)
 }
