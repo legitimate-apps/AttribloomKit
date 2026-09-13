@@ -1,26 +1,37 @@
 # AttribloomKit
 
-![Swift Package](https://img.shields.io/badge/Swift_Package-SPI--friendly_placeholder-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
 AttribloomKit binds a referral to an Attribloom-issued StoreKit 2 `appAccountToken`, stores it locally, and supplies it to purchases. It has no third-party dependencies, fingerprinting, IDFA use, or secrets.
 
-## Get started (for AI agents)
+## Get started
 
-Add `AttribloomKit` to your Swift package or Xcode project. On the first launch after a referral, resolve the token once. Pass the token to every StoreKit 2 purchase for that account.
+Add `AttribloomKit` to your Swift package or Xcode project. Create one facade for the signed-in app account. Resolve an explicit referral in a separate action after the permissions required for your integration are satisfied:
 
 ```swift
 import AttribloomKit
 import StoreKit
 
-let attribloom = Attribloom()
-let token = try await attribloom.resolveToken(refCode: "creator-code")
-let result = try await product.purchase(options: [.attribloom(token)])
+let attribution = Attribloom(store: KeychainTokenStore(accountID: opaqueLocalAccountID))
+
+// Called by your referral action after your app's applicable consent checks.
+func acceptReferral(_ code: String) async {
+    do {
+        _ = try await attribution.resolveToken(refCode: code)
+    } catch {
+        // Show a referral retry option; purchasing remains available.
+    }
+}
+
+// Purchase does not make or wait for an attribution network request.
+func purchase(_ product: Product, attributionPermitted: Bool) async throws -> Product.PurchaseResult {
+    let token = attributionPermitted ? try? await attribution.appAccountToken() : nil
+    let options: Set<Product.PurchaseOption> = token.map { [.attribloom($0)] } ?? []
+    return try await product.purchase(options: options)
+}
 ```
 
-The three calls are `Attribloom()`, `resolveToken(...)`, and `purchase(options: [.attribloom(token)])`.
-
-For recovery after installation, offer user-initiated paste or referral-code entry. Use an account-scoped store as shown below.
+`opaqueLocalAccountID` is your app's stable local account key. Recreate the facade when accounts change. For recovery after installation, offer user-initiated paste or referral-code entry. If consent required for tracking is denied or withdrawn, do not resolve referrals or attach a stored attribution token; purchase with no attribution options. Entitlement restoration must work independently of referral lookup.
 
 ## Links
 
