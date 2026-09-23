@@ -33,6 +33,16 @@ func purchase(_ product: Product, attributionPermitted: Bool) async throws -> Pr
 
 `opaqueLocalAccountID` is your app's stable local account key. Recreate the facade when accounts change. For recovery after installation, offer user-initiated paste or referral-code entry. If consent required for tracking is denied or withdrawn, do not resolve referrals or attach a stored attribution token; purchase with no attribution options. Entitlement restoration must work independently of referral lookup.
 
+## RevenueCat apps
+
+RevenueCat's SDK sets StoreKit's `appAccountToken` from its own App User ID when that ID is a UUID, so the Attribloom token cannot ride on a RevenueCat purchase. Send it as a customer attribute before the first purchase, then connect RevenueCat under Integrations in Attribloom:
+
+```swift
+if let token = try? attribution.appAccountToken() {
+    Purchases.shared.attribution.setAttributes(["attribloom_ref": token.uuidString])
+}
+```
+
 ## Links
 
 - Agent integration guide: https://attribloom.com/agents/ios-affiliate-attribution
