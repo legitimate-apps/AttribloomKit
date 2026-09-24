@@ -131,6 +131,18 @@ final class AttribloomKitTests: XCTestCase {
         XCTAssertEqual(StubURLProtocol.requests.count, 1)
     }
 
+    // Mirrors the README "RevenueCat apps" snippet: the customer attribute carries the persisted token.
+    func testRevenueCatAttributeValueIsThePersistedToken() async throws {
+        stub(status: 200, json: "{\"appAccountToken\":\"\(token.uuidString)\"}")
+        let attribution = Attribloom(client: client(), store: InMemoryTokenStore())
+        _ = try await attribution.resolveToken(refCode: "creator")
+        var attributes: [String: String] = [:]
+        if let stored = try? await attribution.appAccountToken() {
+            attributes["attribloom_ref"] = stored.uuidString
+        }
+        XCTAssertEqual(attributes, ["attribloom_ref": token.uuidString])
+    }
+
     func testOffersPersistWithReferralContext() async throws {
         stub(status: 200, json: "{\"appAccountToken\":\"\(token.uuidString)\",\"offerCode\":\"WELCOME\"}")
         let store = InMemoryTokenStore()

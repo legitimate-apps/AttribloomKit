@@ -38,7 +38,7 @@ func purchase(_ product: Product, attributionPermitted: Bool) async throws -> Pr
 RevenueCat's SDK sets StoreKit's `appAccountToken` from its own App User ID when that ID is a UUID, so the Attribloom token cannot ride on a RevenueCat purchase. Send it as a customer attribute before the first purchase, then connect RevenueCat under Integrations in Attribloom:
 
 ```swift
-if let token = try? attribution.appAccountToken() {
+if let token = try? await attribution.appAccountToken() {
     Purchases.shared.attribution.setAttributes(["attribloom_ref": token.uuidString])
 }
 ```
